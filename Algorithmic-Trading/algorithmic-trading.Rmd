@@ -1,0 +1,697 @@
+---
+title: "Algorithmic Trading"
+author: "Umaima Hussain & Robina Akinyi Rasanga"
+date: "2025-03-18"
+output:
+  pdf_document: 
+    latex_engine: xelatex
+    keep_tex: true
+    fig_crop: false  
+  html_document: default
+  word_document: default
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r packages, include=FALSE, echo=FALSE, results='hide'}
+# Install Packages
+
+# Load libraries
+library(neuralnet)
+library(quantmod)
+library(TTR)
+library(ggplot2)
+library(gramEvol)
+library(keras)
+library(tensorflow)
+library(dplyr)
+library(GA)
+library(PerformanceAnalytics)
+library(rnn)
+library(knitr)
+
+```
+
+
+## Background and Related Work
+
+The trading process has multiple automated functionalities through computer programs which execute stock price predictions along with trade execution and portfolio management according to (Nuti et al., 2011). GA, GP and deep learning models including Vanilla RNN, GRU and LSTM networks have received substantial attention as one of various techniques in this domain. However, the challenge remains to identify a consistently reliable and profitable approach for predicting daily price movements and optimizing buy-sell-hold decisions in the dynamic and often unpredictable stock market.This research explores methods for predicting daily prices and buying-selling-holding decisions to determine which approach provides the best profit-maximizing strategy when reliability conditions remain stable.
+
+The research conducted by (Rajabioun & Rahimi-Kian, 2008) used Genetic Programming to predict stock prices while implementing mean-variance-based trading approaches. Agents traded across five stocks of Boston Stock Market companies through simulated market conditions over the course of one year. When applied to financial modeling the predictive models GP produced better results than standard machine learning methods while simultaneously generating superior financial gains. Particle Swarm Optimization (PSO) helped optimize buy/sell thresholds through its use which proved that GP and PSO can effectively partner for financial modeling applications within automated trading systems.
+
+The predictive accuracy improvement through Feature Construction by Genetic Programming for Factor Construction (GPFC) was studied by (Bao et al., 2023) . The predictive factor construction mechanism of GPFC derives its factors directly from unprocessed market data through a unique crossover operation type for continuous refinement of combinations. Research studies indicated that GPFC substantially raises prediction accuracy especially when data availability is restricted. The method currently only works with market data yet researchers should study systematic hyperparameter optimization as a future research topic.
+
+Deep learning models achieve successful results when used for forecasting financial time series. The model from (Chung & Shin, 2018) combines Genetic Algorithms with Long Short-Term Memory networks to perform architecture optimization of time window size and hidden unit number. The KOSPI application of this model resulted in reduced error rates than conventional forecast methods achieved. The technique shows successful results but faces three main challenges because it neglects commission fees and depends on one market segment and remains difficult to understand.
+
+The authors (Patel et al., 2018) conducted a research project that analyzed LSTM models against RNN structures in their application for stock price prediction on Bombay Stock Exchange data. The performance evaluation indicated that RNN provided better results than LSTM because RNN achieved 89% accuracy while LSTM reached 87%. The research indicates that these models can be modified to forecast prices of various financial instruments which includes commodities.
+
+Collectively, these studies illustrate a growing interest in both evolutionary algorithms and deep learning techniques for financial forecasting. Each approach offers unique strengths—GP-based models excel in interpretability and factor construction, while deep learning models offer powerful pattern recognition capabilities—making their comparison essential in the development of robust trading strategies.
+
+### Handling Data
+
+The task uses the Google (GOOG) stock price data obtained from Yahoo Finance. The data includes: Daily opening, high, low, and closing prices, adjusted closing prices and trading volume.
+
+```{r download stocks, results = 'hide'}
+# Download stock data
+getSymbols("GOOG", src = "yahoo", from = "2014-01-01", to = "2020-12-31")
+
+# Convert to data frame
+goog_data <- data.frame(Date = index(GOOG), coredata(GOOG))
+goog_data <- goog_data[, c("Date", "GOOG.Open", "GOOG.High", "GOOG.Low", "GOOG.Close", "GOOG.Volume", "GOOG.Adjusted")]
+
+head(goog_data)
+
+```
+
+The chart below shows the trend of the stock from the period January 2014 to December 2020.
+
+```{r visualize data, echo=FALSE}
+# Visualize the data
+ggplot(goog_data, aes(x = Date, y = GOOG.Close)) +
+  geom_line(color = "blue") +
+  labs(title = "Google Closing Price Over Time", x = "Date", y = "Closing Price") +
+  theme_minimal()
+
+```
+
+#### Train/Test Split
+
+The data is then split into training and test sets.
+
+```{r train/test split}
+# Split data into train and test
+train_data <- goog_data[goog_data$Date <= "2017-01-01", ]
+test_data <- goog_data[goog_data$Date > "2017-01-01", ]
+```
+
+#### Feature Engineering
+
+The data was then pre-processed to include multiple lagged and calculated features. These features were used for forecasting the next-day closing price. For a fair comparison between the trading models we selected the same features (Close_Lag1,RSI,EMA) in order to prioritize simplicity and efficiency.
+
+```{r feature engineering, echo=FALSE, results = 'hide'}
+# Feature Engineering train data
+train_data$Open_Lag1 <- lag(train_data$GOOG.Open, 1)      
+train_data$Close_Lag1 <- lag(train_data$GOOG.Close, 1)    
+train_data$High_Lag1 <- lag(train_data$GOOG.High, 1)      
+train_data$Low_Lag1 <- lag(train_data$GOOG.Low, 1)        
+train_data$Volume_Lag1 <- lag(train_data$GOOG.Volume, 1)  
+train_data$AdjClose_Lag1 <- lag(train_data$GOOG.Adjusted, 1)  
+train_data$RSI <- RSI(train_data$GOOG.Close, n = 14)
+train_data$EMA <- EMA(train_data$GOOG.Close, n = 10)
+train_data$Target <- lead(train_data$GOOG.Close, 1)  
+train_data$SMA50 <- SMA(train_data$GOOG.Close, n = 50)
+train_data$SMA200 <- SMA(train_data$GOOG.Close, n = 200)
+
+train_data <- na.omit(train_data)
+
+# Feature engineering test data
+test_data$Open_Lag1 <- lag(test_data$GOOG.Open, 1)      
+test_data$Close_Lag1 <- lag(test_data$GOOG.Close, 1)    
+test_data$High_Lag1 <- lag(test_data$GOOG.High, 1)      
+test_data$Low_Lag1 <- lag(test_data$GOOG.Low, 1)        
+test_data$Volume_Lag1 <- lag(test_data$GOOG.Volume, 1)  
+test_data$AdjClose_Lag1 <- lag(test_data$GOOG.Adjusted, 1)  
+test_data$RSI <- RSI(test_data$GOOG.Close, n = 14)
+test_data$EMA <- EMA(test_data$GOOG.Close, n = 10)
+test_data$Target <- lead(test_data$GOOG.Close, 1)  
+test_data$SMA50 <- SMA(test_data$GOOG.Close, n = 50)
+test_data$SMA200 <- SMA(test_data$GOOG.Close, n = 200)
+
+test_data <- na.omit(test_data) 
+
+
+#feature_columns <- c("Open_Lag1", "Close_Lag1", "High_Lag1", "Low_Lag1", "Volume_Lag1", "RSI", "EMA", "SMA50", "SMA200")
+selected_feature_columns <- c("Close_Lag1","RSI", "EMA")
+head(train_data)
+head(test_data)
+```
+
+#### Fitness Function for GA
+
+The fitness function used for the Genetic Algorithm (GA) is the negative mean squared error **(MSE)** between the predicted values of the model and actual values. This the allows the GA to find the optimal weights for the selected features.
+
+```{r GA, results='hide'}
+
+normalize <- function(x) {
+  return((x - min(x)) / (max(x) - min(x)))
+}
+
+train_scaled <- train_data %>%
+  select(all_of(selected_feature_columns), Target) %>%
+  mutate(across(everything(), normalize))
+
+test_scaled <- test_data %>%
+  select(all_of(selected_feature_columns), Target) %>%
+  mutate(across(everything(), normalize))
+
+X_train <- as.matrix(train_scaled[, selected_feature_columns])  
+y_train <- train_scaled$Target  
+
+X_test <- as.matrix(test_scaled[, selected_feature_columns]) 
+y_test <- test_scaled$Target  
+#Fitness function for GA
+fitness_function_ga <- function(weights) {
+  pred <- as.matrix(X_train) %*% weights
+  -mean((pred - y_train)^2)
+}
+
+ga_result <- ga(
+  type = "real-valued",
+  fitness = fitness_function_ga,
+  lower = rep(-1, length(selected_feature_columns)),
+  upper = rep(1, length(selected_feature_columns)),
+  popSize = 100,
+  maxiter = 300,
+  run = 100,
+  seed = 123,
+  monitor = FALSE
+)
+
+
+best_weights <- as.numeric(ga_result@solution)
+```
+
+#### Fitness Function for GP
+
+The Genetic Programming (GP) uses root mean squared error **(RMSE)** of the predicted prices from the model against real values as its fitness function. The fitness function supports GP to determine the best expression among selected features.
+
+```{r fitness function, echo=TRUE}
+# Fitness Function
+fitness_function_gp <- function(expr, data) {
+  tryCatch({
+    predicted <- eval(expr, envir = data)
+    if(any(is.nan(predicted)) || any(is.na(predicted))){
+      return(Inf)
+    }
+   rmse <- sqrt(mean((predicted - data$Target)^2))
+   return(rmse)
+  }, error = function(e) {
+    return(Inf)
+  })
+}
+
+```
+
+```{r Grammar, echo=TRUE, results='hide'}
+# Grammar Definition for GP
+ruleDef <- list(
+  expr = grule(op(expr, expr), func(expr), var),
+  func = grule(sin, cos, exp, log),
+  op   = grule(`+`, `-`, `*`, `/`),
+  var  = grule(Close_Lag1, RSI, EMA)
+)
+
+gpGrammar <- CreateGrammar(ruleDef)
+
+```
+
+#### GP
+
+The grammatical evolution model allowed the combination of basic arithmetic and trigonometric functions to generate expressions representing the target variable.The best expression obtained was **expression(close_Lag1)** with a popSize of 200, 100 iterations and a max depth pf 7.
+
+```{r GP, echo=TRUE, results='hide',, warning=FALSE}
+# Grammatical Evolution for GP Model
+
+gpModel <- GrammaticalEvolution(
+  grammar = gpGrammar,
+  evalFunc = function(expr) fitness_function_gp(expr, data = train_data),
+  terminationCost = 8, 
+  max.depth = 7,
+  iterations = 100,
+  popSize = 200,
+  monitorFunc = NULL
+)
+
+best_model_gp <- gpModel$best$expression
+
+```
+
+### Neural Networks
+
+Recurrent Neural Networks (RNNs) are specifically designed for analyzing sequential data (AWS, n.d), like stock prices, by retaining a memory of earlier time steps. In this project, we implement and evaluate three well-known RNN-based frameworks:
+
+-   Vanilla RNN: This is the fundamental RNN structure, which is straightforward but frequently struggles with vanishing gradients when dealing with long sequences (admin, 2023).
+
+-   LSTM (Long Short-Term Memory): This architecture incorporates gating mechanisms to more effectively manage long-term dependencies (admin,2023).
+
+-   GRU (Gated Recurrent Unit): A more streamlined version of LSTM that has fewer gates, often delivering comparable performance while training more quickly (admin,2023).
+
+All models will be trained and assessed below to determine how effectively they identify patterns in time-series stock data and inform trading decisions.
+
+#### LSTM
+
+The LSTM model operated with one hidden layer and 50 units along with a batch size of 32 for its processing. It also involved 50 epochs of training while the Adam optimizer performed the backpropagation process. Before training, the LSTM model required input data normalized by min-max scaling which was used for both training and testing. The input data received a 3D array transformation for (number of samples, 1, number of features) which fulfills the required format for LSTM processing. The LSTM model outputs predictions for the target variable.
+
+```{r LSTM}
+# Normalize the features
+normalize <- function(x) {
+  return((x - min(x)) / (max(x) - min(x)))
+}
+
+train_scaled <- train_data %>%
+  select(all_of(selected_feature_columns), Target) %>%
+  mutate(across(everything(), normalize))
+
+test_scaled <- test_data %>%
+  select(all_of(selected_feature_columns), Target) %>%
+  mutate(across(everything(), normalize))
+
+# Prepare LSTM data
+X_train <- as.matrix(train_scaled[, selected_feature_columns])  
+y_train <- train_scaled$Target  
+
+X_test <- as.matrix(test_scaled[, selected_feature_columns]) 
+y_test <- test_scaled$Target  
+
+# 3D arrays for LSTM input
+X_train <- array(X_train, dim = c(nrow(X_train), 1, length(selected_feature_columns)))  
+X_test <- array(X_test, dim = c(nrow(X_test), 1, length(selected_feature_columns)))  
+
+# Build LSTM Model
+model <- keras_model_sequential() %>%
+  layer_lstm(units = 50, input_shape = c(1, length(selected_feature_columns)), return_sequences = FALSE) %>%
+  layer_dense(units = 1)
+
+model %>% compile(
+  loss = "mse",
+  optimizer = optimizer_adam(),
+  metrics = list("mean_squared_error")
+)
+
+history <- model %>% fit(
+  X_train, y_train,
+  epochs = 50,
+  batch_size = 32,
+  validation_split = 0.1,
+   verbose = 0  
+)
+
+```
+
+#### Vanilla RNN Model
+
+The Vanilla RNN model contained 10 hidden units while it trained through 100 epochs using a 10 batch size with a learning rate set to 0.01. The process of normalization was applied during preparation before starting training just like it was used in the LSTM. The processed data was transformed into sequences of length 5 which enabled the RNN to make predictions about the next five values while using the preceding 5 values. The RNN model produces target predictions through its learning process which is shown in the provided output where Epoch error decreases over training time.
+
+```{r Vanilla RNN,echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+# Define the normalize function
+normalize <- function(x) {
+  return((x - min(x)) / (max(x) - min(x)))
+}
+
+# Normalize train and test datasets
+train_scaled <- train_data %>%
+  select(all_of(selected_feature_columns), Target) %>%
+  mutate(across(everything(), normalize))
+
+test_scaled <- test_data %>%
+  select(all_of(selected_feature_columns), Target) %>%
+  mutate(across(everything(), normalize))
+
+# Define sequence length
+sequence_length <- 5
+
+# Create sequences for RNN for training data
+X_train_rnn <- array(NA, dim = c(nrow(train_scaled) - sequence_length, sequence_length, length(selected_feature_columns)))
+Y_train_rnn <- array(NA, dim = c(nrow(train_scaled) - sequence_length, sequence_length, 1))
+date_train <- index(train_data)[1:(nrow(train_scaled) - sequence_length)]
+
+for (i in 1:(nrow(train_scaled) - sequence_length)) {
+  X_train_rnn[i,,] <- as.matrix(train_scaled[i:(i + sequence_length - 1), selected_feature_columns])
+  Y_train_rnn[i,,1] <- as.matrix(train_scaled[(i + 1):(i + sequence_length), "Target"])
+}
+
+# Create sequences for RNN for test data
+X_test_rnn <- array(NA, dim = c(nrow(test_scaled) - sequence_length, sequence_length, length(selected_feature_columns)))
+Y_test_rnn <- array(NA, dim = c(nrow(test_scaled) - sequence_length, sequence_length, 1))
+date_test <- index(test_data)[1:(nrow(test_scaled) - sequence_length)]
+
+for (i in 1:(nrow(test_scaled) - sequence_length)) {
+  X_test_rnn[i,,] <- as.matrix(test_scaled[i:(i + sequence_length - 1), selected_feature_columns])
+  Y_test_rnn[i,,1] <- as.matrix(test_scaled[(i + 1):(i + sequence_length), "Target"])
+}
+
+
+rnn_model <- trainr(Y = Y_train_rnn,
+                X = X_train_rnn,
+                learningrate = 0.01,
+                hidden_dim = 10,
+                numepochs = 100,
+                batch_size = 10)
+
+```
+
+#### GRU
+
+The Gated Recurrent Unit (GRU) model operated with a structure of 50 hidden units. Data normalization processes took place before training in conformity with the preprocessing methods used for LSTM and RNN. The GRU network completed its training process through 50 consecutive epochs using 32 samples in each batch. The GRU required sequential input data arranged in 3D array structure with sequence length set to 1 because of the included technical indicators and history of prices. The assessment of the model utilized the mean squared error loss function which trained through minimizing error according to the displayed training history.
+
+```{r GRU}
+# Normalize the features
+normalize <- function(x) {
+  return((x - min(x)) / (max(x) - min(x)))
+}
+
+train_scaled <- train_data %>%
+  select(all_of(selected_feature_columns), Target) %>%
+  mutate(across(everything(), normalize))
+
+test_scaled <- test_data %>%
+  select(all_of(selected_feature_columns), Target) %>%
+  mutate(across(everything(), normalize))
+
+# Prepare GRU data
+X_train <- as.matrix(train_scaled[, selected_feature_columns])  
+y_train <- train_scaled$Target  
+
+X_test <- as.matrix(test_scaled[, selected_feature_columns]) 
+y_test <- test_scaled$Target  
+
+# 3D arrays for GRU input
+X_train <- array(X_train, dim = c(nrow(X_train), 1, length(selected_feature_columns)))  
+X_test <- array(X_test, dim = c(nrow(X_test), 1, length(selected_feature_columns)))  
+
+# Build GRU Model
+model_gru <- keras_model_sequential() %>%
+  layer_gru(units = 50, input_shape = c(1, length(selected_feature_columns)), return_sequences = FALSE) %>%
+  layer_dense(units = 1)
+
+model_gru %>% compile(
+  loss = "mse",
+  optimizer = optimizer_adam(),
+  metrics = list("mean_squared_error")
+)
+
+history <- model_gru %>% fit(
+  X_train, y_train,
+  epochs = 50,
+  batch_size = 32,
+  validation_split = 0.1,
+  verbose = 0
+)
+
+```
+
+#### Performance Metrics 
+This section focused on evaluating the predictive performance of the algorithmic trading model. For each model, predictions were generated on both the training and testing datasets, with denormalization applied where necessary to rescale the predictions to the original price range. The accuracy of these predictions was then assessed using two key metrics: Root Mean Squared Error (RMSE), quantifying the average magnitude of prediction errors, and Directional Accuracy, measuring the model's ability to correctly forecast the direction of price movements. This rigorous evaluation framework allowed for a comparative analysis of each model's effectiveness in predicting stock prices, providing insights into their strengths and weaknesses.
+
+```{r performance, echo=FALSE, results='hide', include=FALSE}
+# Denormalize function for standardized values
+denormalize <- function(scaled, original) {
+  scale_attr <- attributes(scale(original))
+  return(scaled * scale_attr$`scaled:scale` + scale_attr$`scaled:center`)
+}
+# GA
+ denorm <- function(x, min_val, max_val) {
+  return(x * (max_val - min_val) + min_val)
+ }
+ 
+X_train_ga <- as.matrix(train_scaled[, selected_feature_columns])  # feature columns for training
+X_test_ga <- as.matrix(test_scaled[, selected_feature_columns])
+
+# Calculate min and max for test data
+train_predictions_ga <- X_train_ga %*% best_weights
+test_predictions_ga <- X_test_ga %*% best_weights
+
+# Denormalize the predictions
+train_predictions_ga <- denorm(train_predictions_ga, min(train_data$Target),max(train_data$Target))
+test_predictions_ga <- denorm(test_predictions_ga, min(test_data$Target),max(test_data$Target))
+
+# Generate predictions for GP Model
+train_predictions_gp <- eval(best_model_gp, envir = train_data)
+test_predictions_gp <- eval(best_model_gp, envir = test_data)
+
+# Evaluate LSTM Model predictions
+train_pred_lstm <- model %>% predict(X_train)
+test_pred_lstm <- model %>% predict(X_test)
+
+# Denormalize LSTM Predictions
+train_pred_lstm <- denorm(train_pred_lstm,min(train_data$Target),max(train_data$Target))
+test_pred_lstm <- denorm(test_pred_lstm,min(test_data$Target),max(test_data$Target))
+
+# RNN predictions
+
+train_predictions_rnn <- predictr(rnn_model, X_train_rnn)  # Assuming rnn_model is your trained RNN model
+test_predictions_rnn <- predictr(rnn_model, X_test_rnn)  # Assuming rnn_model is your trained RNN model
+
+# Denormalize the RNN predictions
+train_predictions_rnn <- denorm(train_predictions_rnn, min(train_data$Target),max(train_data$Target))
+test_predictions_rnn <- denorm(test_predictions_rnn, min(test_data$Target),max(test_data$Target))
+
+# Evaluate GRU Model predictions
+train_pred_gru <- model_gru %>% predict(X_train)
+test_pred_gru <- model_gru %>% predict(X_test)
+
+# Denormalize GRU Predictions
+train_pred_gru <- denorm(train_pred_gru,min(train_data$Target),max(train_data$Target))
+test_pred_gru <- denorm(test_pred_gru,min(test_data$Target),max(test_data$Target))
+
+
+# Directional Accuracy
+directional_accuracy <- function(predictions, actual) {
+  correct_direction <- sum(sign(diff(predictions)) == sign(diff(actual)), na.rm = TRUE)
+  total_points <- length(predictions) - 1
+  return(correct_direction / total_points)
+}
+
+rmse <- function(predictions, actual) {
+  return(sqrt(mean((predictions - actual)^2, na.rm = TRUE)))
+}
+
+# Calculate Sharpe Ratio
+calculate_sharpe <- function(returns, risk_free_rate = 0) {
+  excess_returns <- returns - risk_free_rate
+  return(mean(excess_returns) / sd(excess_returns))
+}
+# GA Model Performance
+train_rmse_ga <- rmse(train_predictions_ga, train_data$Target)
+train_dir_acc_ga <- directional_accuracy(train_predictions_ga, train_data$Target)
+test_rmse_ga <- rmse(test_predictions_ga, test_data$Target)
+test_dir_acc_ga <- directional_accuracy(test_predictions_ga, test_data$Target)
+
+# GP Model Performance
+train_rmse_gp <- rmse(train_predictions_gp, train_data$Target)
+train_dir_acc_gp <- directional_accuracy(train_predictions_gp, train_data$Target)
+test_rmse_gp <- rmse(test_predictions_gp, test_data$Target)
+test_dir_acc_gp <- directional_accuracy(test_predictions_gp, test_data$Target)
+
+# LSTM Model Performance
+train_rmse_lstm <- rmse(train_pred_lstm, train_data$Target)
+train_dir_acc_lstm <- directional_accuracy(train_pred_lstm, train_data$Target)
+test_rmse_lstm <- rmse(test_pred_lstm, test_data$Target)
+test_dir_acc_lstm <- directional_accuracy(test_pred_lstm, test_data$Target)
+
+#GRU Model Performance
+train_rmse_gru <- rmse(train_pred_gru, train_data$Target)
+train_dir_acc_gru <- directional_accuracy(train_pred_gru, train_data$Target)
+test_rmse_gru <- rmse(test_pred_gru, test_data$Target)
+test_dir_acc_gru <- directional_accuracy(test_pred_gru, test_data$Target)
+
+
+#Vanilla RNN Model Performance
+train_predictions_rnn <- train_predictions_rnn[, 5]
+test_predictions_rnn <- test_predictions_rnn[, 5]
+
+train_rmse_rnn <- rmse(train_predictions_rnn, train_data$Target)
+train_dir_acc_rnn <- directional_accuracy(train_predictions_rnn, train_data$Target)
+test_rmse_rnn <- rmse(test_predictions_rnn, test_data$Target)
+test_dir_acc_rnn <- directional_accuracy(test_predictions_rnn, test_data$Target)
+
+```
+
+#### Backtesting
+
+The backtesting evaluation performed tests on trading model performance. The model derived its trading signals from predicted price assessments against closing price values through the implementation of trend analysis with 50-day SMA and 200-day SMA. The simulation recorded position data as well as tracking buy prices and computing daily return statistics and equity curve developments. A Sharpe ratio calculation with daily returns from the trading models determined the overall performance quality of the strategy.
+
+```{r Backtesting,  results='hide', include=FALSE}
+# Backtesting Function
+backtest_with_metrics <- function(data, predictions, initial_capital = 10000) {
+
+  capital <- initial_capital
+  position <- 0
+  buy_price <- 0
+  equity_curve <- numeric(nrow(data))
+  daily_returns <- numeric(nrow(data))
+  
+  # Create trading signals
+  data$Decision <- ifelse(predictions > data$GOOG.Close & data$SMA50 > data$SMA200, 1,
+                         ifelse(predictions < data$GOOG.Close & data$SMA50 < data$SMA200, -1, 0))
+  
+  for (i in 1:(nrow(data) - 1)) {
+    price_today <- data$GOOG.Close[i + 1]
+    
+    if (!is.na(data$Decision[i]) && data$Decision[i] == 1 && position == 0) {
+      buy_price <- price_today
+      position <- capital / buy_price
+      capital <- 0
+    } else if (!is.na(data$Decision[i]) && data$Decision[i] == -1 && position > 0) {
+      capital <- position * price_today
+      position <- 0
+    }
+    
+    equity_curve[i] <- ifelse(position > 0, position * price_today, capital)
+    daily_returns[i] <- ifelse(i > 1, (equity_curve[i] - equity_curve[i - 1]) / equity_curve[i - 1], 0)
+  }
+  
+  final_price <- data$GOOG.Close[nrow(data)]
+  if (position > 0) {
+    capital <- position * final_price
+  }
+  
+  equity_curve[nrow(data)] <- capital
+  daily_returns[nrow(data)] <- (capital - equity_curve[nrow(data) - 1]) / equity_curve[nrow(data) - 1]
+  
+  return(list(
+    final_value = capital,
+    equity_curve = equity_curve,
+    returns = daily_returns
+  ))
+}
+
+# Backtest GA
+
+ga_backtest_results <- backtest_with_metrics(test_data, test_predictions_ga)
+
+train_ga_backtest <- backtest_with_metrics(train_data, train_predictions_ga)
+
+# Backtest GP Model
+gp_backtest_results <- backtest_with_metrics(test_data, test_predictions_gp)
+train_gp_backtest <- backtest_with_metrics(train_data, train_predictions_gp)
+
+# Backtest LSTM Model
+lstm_backtest_results <- backtest_with_metrics(test_data, test_pred_lstm)
+train_lstm_backtest <- backtest_with_metrics(train_data, train_pred_lstm)
+
+# Backtest GRU Model
+gru_backtest_results <- backtest_with_metrics(test_data, test_pred_gru)
+train_gru_backtest <- backtest_with_metrics(train_data, train_pred_gru)
+
+
+# Backtest LSTM Model
+rnn_backtest_results <- backtest_with_metrics(test_data, test_predictions_rnn)
+train_rnn_backtest <- backtest_with_metrics(train_data, train_predictions_rnn)
+
+# Calculate Sharpe Ratios
+train_sharpe_ga <- calculate_sharpe(train_ga_backtest$returns)
+test_sharpe_ga <- calculate_sharpe(ga_backtest_results$returns)
+train_sharpe_gp <- calculate_sharpe(train_gp_backtest$returns)
+test_sharpe_gp <- calculate_sharpe(gp_backtest_results$returns)
+train_sharpe_lstm <- calculate_sharpe(train_lstm_backtest$returns)
+test_sharpe_lstm <- calculate_sharpe(lstm_backtest_results$returns)
+train_sharpe_gru <- calculate_sharpe(train_gru_backtest$returns)
+test_sharpe_gru <- calculate_sharpe(gru_backtest_results$returns)
+train_sharpe_rnn <- calculate_sharpe(train_rnn_backtest$returns)
+test_sharpe_rnn <- calculate_sharpe(rnn_backtest_results$returns)
+```
+
+#### Comaprison Table
+
+The LSTM model produces a remarkable final portfolio value of 14,461.10 which demonstrates strong profitability together with a Test Sharpe Ratio of 0.0347. The model exhibits a decency in exact price predictions as indicated by its Test RMSE score of 1.653.
+
+The GRU model achieved identical Test Directional Accuracy of 52.67% to LSTM while obtaining the same results for Test Sharpe Ratio and Final Portfolio Value as LSTM. Although the Test RMSE stands at 1.992 the model doesn't demonstrate an improvement from LSTM.
+
+The GP model generates the lowest Test RMSE value which stands at 1.541. Although the model achieves the minimum final portfolio value (13,660.92), its accuracy does not translate to profitability. The GP model often produces simple lagged value results which might contribute to its limited pattern detection capabilities.
+
+The GA model presents an balanced outcome that achieves a Test RMSE (1.947) and excellent Final Portfolio Value at (15,526.65). Linear feature-weight optimization through GA produces financial strategies which deliver profitable results.
+
+The Vanilla RNN model exhibits overall inferior performance because it produces the maximum Test RMSE measure of 3.339 along with the minimum Train Directional Accuracy rate of 48%. The model demonstrates a Sharpe Ratio 0.0348 and portfolio end value (14,335.15) but registers neither the best nor worst results from among the strategies under consideration.
+
+```{r comparison table, echo=FALSE}
+comparison_table <- data.frame(
+  Metric = c("Train RMSE", "Test RMSE", "Train Directional Accuracy", "Test Directional Accuracy", 
+             "Train Sharpe Ratio", "Test Sharpe Ratio", "Final Portfolio Value"),
+  GA = c(train_rmse_ga, test_rmse_ga, train_dir_acc_ga, test_dir_acc_ga, 
+         train_sharpe_ga, test_sharpe_ga, ga_backtest_results$final_value),
+  GP = c(train_rmse_gp, test_rmse_gp, train_dir_acc_gp, test_dir_acc_gp, 
+         train_sharpe_gp, test_sharpe_gp, gp_backtest_results$final_value),
+  LSTM = c(train_rmse_lstm, test_rmse_lstm, train_dir_acc_lstm, test_dir_acc_lstm, 
+           train_sharpe_lstm, test_sharpe_lstm, lstm_backtest_results$final_value),
+  GRU = c(train_rmse_gru, test_rmse_gru, train_dir_acc_gru, test_dir_acc_gru,  
+          train_sharpe_gru, test_sharpe_gru, gru_backtest_results$final_value),
+  RNN = c(train_rmse_rnn, test_rmse_rnn, train_dir_acc_rnn, test_dir_acc_rnn, 
+           train_sharpe_rnn, test_sharpe_rnn, rnn_backtest_results$final_value)
+)
+
+# Display the table with a caption
+kable(comparison_table, caption = "**Model Performance Comparison (RMSE, Accuracy, Sharpe, Portfolio Value)**")
+
+```
+
+#### Plot visuals
+
+The equity curve graph below illustrates the performance of five different models—GA, GP, GRU, LSTM, and RNN—over time. The GA model, represented by the green line, significantly outshines the others, consistently reaching the highest portfolio value with a steeper ascent and more rapid recoveries following drawdowns. In comparison, the GP model, shown in blue, falls short for most of the observed timeframe, exhibiting lower growth and more pronounced drawdowns, which aligns with its lower overall portfolio value even though it had the best prediction RMSE. Both GRU (in purple) and LSTM (in red) demonstrate relatively stable outcomes, frequently overlapping, and persistently occupying a solid middle position—consistent with their comparable directional accuracy and Sharpe ratios. The RNN model, depicted in pink, presents the most erratic and flattened trajectory, emphasizing its inadequate predictive capabilities and limited effectiveness in creating profitable signals. Ultimately, the graph underscores the notion that high prediction accuracy does not necessarily lead to profitability, and highlights that GA's more straightforward, resilient strategy was the most successful in this trading scenario.
+
+The graph labeled "Test Data: Actual vs Predicted" below illustrates a comparison between actual stock prices and the predicted prices generated by five distinct models: GA, GP, GRU, LSTM, and RNN. All five models seem to reflect the overall upward trend in actual stock prices, suggesting a certain level of success in forecasting the general market direction. However, there are significant differences in the precision and variability of these predictions.The LSTM model shows the most significant deviation from the actual prices, particularly towards the end of the test period, indicating greater volatility and potentially reduced accuracy in capturing short-term variations. Conversely, the GA and GP models present more stable forecasts with fewer fluctuations, signaling a higher level of consistency in their predictions. The RNN model also closely follows the actual prices, though it does exhibit some discrepancies, akin to the LSTM but to a lesser degree.In summary, while all five models show some capability in predicting the general trend of stock prices, the LSTM and RNN models appear more affected by volatility and may be less dependable in accurately forecasting immediate price movements compared to the GA and GP models.
+
+```{r visualisation, echo=FALSE}
+
+#### Plot visuals
+# equity curves
+ggplot() +
+  geom_line(aes(x = 1:length(ga_backtest_results$equity_curve), 
+                y = ga_backtest_results$equity_curve, color = "GA")) +
+  geom_line(aes(x = 1:length(gp_backtest_results$equity_curve), 
+                y = gp_backtest_results$equity_curve, color = "GP")) +
+  geom_line(aes(x = 1:length(lstm_backtest_results$equity_curve), 
+                y = lstm_backtest_results$equity_curve, color = "LSTM")) +
+  geom_line(aes(x = 1:length(gru_backtest_results$equity_curve), 
+                y = gru_backtest_results$equity_curve, color = "GRU")) +
+  geom_line(aes(x = 1:length(rnn_backtest_results$equity_curve), 
+                y = rnn_backtest_results$equity_curve, color = "RNN")) +
+  
+  labs(title = "Equity Curves: GP vs LSTM", x = "Time", y = "Portfolio Value") +
+  theme_minimal() +
+  scale_color_manual(name = "Model", values = c("GA" = "green","GP" = "blue", "LSTM" = "red","GRU" = "purple" , "RNN" = "pink"))
+
+
+ggplot() +
+  geom_line(aes(x = 1:length(test_data$Target), y = test_data$Target, color = "Actual")) +
+    geom_line(aes(x = 1:length(test_predictions_ga), y = test_predictions_ga, color = "GA Predicted")) +
+  geom_line(aes(x = 1:length(test_predictions_gp), y = test_predictions_gp, color = "GP Predicted")) +
+  geom_line(aes(x = 1:length(test_pred_lstm), y = test_pred_lstm, color = "LSTM Predicted")) +
+  geom_line(aes(x = 1:length(test_pred_gru), y = test_pred_gru, color = "GRU Predicted")) +
+  geom_line(aes(x = 1:length(test_predictions_rnn), y = test_predictions_rnn, color = "RNN Predicted")) +
+  labs(title = "Test Data: Actual vs Predicted", x = "Time", y = "Price") +
+  theme_minimal() +
+  scale_color_manual(name = "Series", 
+                     values = c("Actual" = "orange","GA Predicted" = "green", "GP Predicted" = "blue", "LSTM Predicted" = "red","GRU Predicted" = "purple", "RNN Predicted" = "pink"))
+
+```
+
+#### Limitations
+
+This study acknowledges several limitations that should be considered when interpreting the results.
+
+-   **Data Limitations:** The analysis was conducted using historical data from a single stock (GOOG) between 2014 and 2020. This limits the generalizability of the findings to other stocks or market conditions.
+
+-   **Feature Engineering:** The feature set was simplified and did not capture all relevant market information, and future work could explore the inclusion of additional factors or alternative feature selection methods to potentially enhance the model's predictive power.
+
+-   **Model Limitations:** The models' performance is contingent on the chosen hyperparameters, which were not subject to extensive tuning. The relative simplicity of the GP model's final expression suggests potential limitations in the search process or fitness function. Finally, the backtesting simulation did not account for real-world trading costs, which could affect the practical profitability of the strategies.
+
+These limitations highlight potential avenues for future research to enhance the robustness and applicability of algorithmic trading models.
+
+# Conclusion
+
+The examination of various algorithmic trading models reveals unique performance attributes for each method. The Genetic Algorithm (GA) shows a strong ability to optimize the weights of technical indicators, resulting in a trading strategy that yields the highest final portfolio value, but with some volatility. Although Genetic Programming (GP) emphasizes the predictive ability of simple lagged price values—specifically, the previous day’s closing price—it faces challenges in delivering consistent returns, highlighting its limitations in capturing more complex market behaviors. The Long Short-Term Memory (LSTM) network, an advanced type of recurrent neural network, presents significant volatility but also achieves a robust final portfolio value, indicating its capability to realize substantial gains at a higher risk. The Gated Recurrent Unit (GRU) model largely reflects the performance of the LSTM, exhibiting comparable volatility and a strong final portfolio value, thus highlighting the effectiveness of gated recurrent architectures for this purpose. In comparison, the Vanilla Recurrent Neural Network (RNN), which is the simplest version of recurrent networks, shows moderate volatility and a lower final portfolio value relative to LSTM and GRU, suggesting that more intricate architectures offer advantages in this trading context. Ultimately, the selection of the most appropriate model hinges on the trader's risk appetite and investment goals, with both evolutionary algorithms and sophisticated recurrent networks proving their potential for algorithmic trading, though with varying strengths and weaknesses.
+
+
+# Acknowledgements
+This project was a collaborative effort between Umaima Hussain and Robina Akinyi Rasanga. Umaima took charge of implementing Genetic Algorithms (GA), Gated Recurrent Unit (GRU), and Recurrent Neural Network (RNN) models, as well as compiling all models into a coherent report and improving model performance. Robina focused on the implementation of Genetic Programming (GP) and Long Short-Term Memory (LSTM) models, performance evaluation, and conducting the literature review. Together, we discussed and shaped the overall framework and direction of the research.
+
+# References
+
+G. Nuti, M. Mirghaemi, P. Treleaven and C. Yingsaeree, "Algorithmic Trading," in Computer, vol. 44, no. 11, pp. 61-69, Nov. 2011, doi: 10.1109/MC.2011.31.
+
+Rajabioun, R., & Rahimi-Kian, A. (2008, July). A genetic programming based stock price predictor together with mean-variance based sell/buy actions. In Proceedings of the World Congress on Engineering (Vol. 2, pp. 2-4).
+
+Chung, H., & Shin, K.-s. (2018). Genetic Algorithm-Optimized Long Short-Term Memory Network for Stock Market Prediction. Sustainability, 10(10), 3765. <https://doi.org/10.3390/su10103765>
+
+Patel, J., Patel, M., & Darji, M. (2018). Stock price prediction using RNN and LSTM. Journal of Emerging Technologies and Innovative Research, 5(11), 1069-1079.
+
+Bao, H., Zhang, C., Zhang, C., Zhang, B. (2023). An Improved Genetic Programming Based Factor Construction for Stock Price Prediction. In: Zhang, S., Zhang, Y. (eds) Artificial Intelligence Logic and Applications. AILA 2023. Communications in Computer and Information Science, vol 1917. Springer, Singapore. <https://doi.org/10.1007/978-981-99-7869-4_18>
+
+AWS. (n.d.). What is RNN? - Recurrent Neural Networks Explained - AWS. Amazon Web Services, Inc. <https://aws.amazon.com/what-is/recurrent-neural-network/>
+
+admin. (2023, December 15). Corpnce. Corpnce. <https://www.corpnce.com/different-types-of-recurrent-neural-network/>
