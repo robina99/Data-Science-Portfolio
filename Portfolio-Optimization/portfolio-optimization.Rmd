@@ -1,0 +1,803 @@
+---
+title: "Portfolio Optimization using GAs"
+author: "Robina Akinyi Rasanga"
+date: "2025-02-21"
+output:
+  pdf_document: 
+    latex_engine: xelatex
+    keep_tex: true
+    fig_crop: false  
+  html_document: default
+  word_document: default
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+A Genetic Algorithm (GA) is a type of metaheuristic optimization technique that draws inspiration from the principles of natural selection. As a component of evolutionary algorithms (EA), it uses biologically inspired operations such as selection, crossover, and mutation to iteratively identify high-quality solutions to complex optimization problems [1].
+
+In portfolio optimization, the goal is to distribute assets in a way that maximizes returns while minimizing risk. Traditional methods, such as mean-variance optimization, can struggle with constraints like non-linearity, transaction costs, and real-world market complexities. This makes Genetic Algorithms (GAs) a powerful alternative, as they can efficiently explore a wide range of portfolio allocations and adapt to changing market conditions [2].
+
+This report intends to utilize Genetic Algorithms (GA) to: optimize the weight distribution of a set of manually chosen assets, assess performance using unseen data, contrast GA-optimized portfolios with both random and equal-weighted portfolios, investigate a multi-objective strategy for balancing risk against return, and expand the GA method to automatically select assets from a broader range.
+
+```{r load libraries, include=FALSE, echo=FALSE}
+
+ # Set CRAN Mirror
+options(repos = c(CRAN ="https://cran.rstudio.com")) 
+
+# Install Packages
+
+install.packages("tinytex")
+install.packages("GA")                 
+install.packages("quantmod")             
+install.packages("PerformanceAnalytics")   
+install.packages("ggplot2")           
+install.packages("tidyverse")         
+install.packages("conflicted")          
+install.packages("plotly")            
+install.packages("reshape")
+install.packages("parallelly")
+install.packages("doParallel")
+install.packages("Parallel")
+install.packages("knitr")
+
+
+# Load necessary libraries
+library(GA)
+library(quantmod)
+library(PerformanceAnalytics)
+library(ggplot2)
+library(tidyverse)
+library(conflicted)
+library(plotly)
+library(reshape)
+library(knitr)
+```
+
+## Assets Overview
+
+To provide diversification and a balanced risk-return profile, the portfolio is made up of assets from various sectors. Each asset was chosen according to its place in the market, potential for growth, and ability to support the stability of the portfolio as a whole.
+
+The portfolio constitutes the following assets from 2015-2016: - **WMT (Walmart Inc.):** A large multinational retail company that was chosen due to its strong market position, regular dividend distributions, and involvement in the consumer staples industry [3].
+
+-   **NFLX (Netflix, Inc.):** A leading streaming entertainment company [3]. It was chosen due to its dominant position in the streaming market, innovative content creation, and global reach.
+
+-   **DIS (The Walt Disney Company):** A global entertainment and media conglomerate [3]. Its selection is based on its diversified business segments (theme parks, studios, streaming), strong brand recognition, and potential for long-term growth in the entertainment industry.
+
+-   **JNJ (Johnson & Johnson):** A multinational healthcare company [3]. Its inclusion is due to its diversified business across pharmaceuticals, medical devices, and consumer health products, its history of dividend payments, and its reputation for stability.
+
+-   **BABA (Alibaba Group Holding Limited):** A Chinese multinational technology company specializing in e-commerce, retail, and cloud computing [3]. It was selected for its significant presence in the rapidly growing Chinese market, its dominance in e-commerce and cloud services, and its potential for long-term growth.
+
+-   **NKE (Nike, Inc.):** A global athletic footwear and apparel company [3]. Its selection is based on its strong brand recognition, global reach, and innovative product development.
+
+-   **SBUX (Starbucks Corporation):** A premier roaster, marketer, and retailer of specialty coffee [3]. It was chosen for its established brand, global presence, and consistent growth in the consumer discretionary sector.
+
+-   **AMZN (Amazon.com, Inc.):** A global e-commerce and cloud computing giant [3]. It was selected for its dominant position in e-commerce and cloud services (AWS), its innovative approach to technology, and its potential for continued growth.
+
+-   **KO (The Coca-Cola Company):** A beverage company with a globally recognized brand [3]. It was included for its consistent dividend payments, established market presence in the consumer staples sector, and global reach.
+
+-   **AAPL (Apple Inc.):** A company renowned for its consumer electronics, software, and online services [3]. It was selected for its strong brand loyalty, innovative product development, and substantial presence in the technology sector.
+
+```{r assets, results="hide"}
+myassets <- c("WMT", "NFLX", "DIS", "JNJ", "BABA", "NKE", "SBUX", "AMZN", "KO", "AAPL")
+#Download data
+getSymbols(myassets, src="yahoo", from="2015-01-01", to="2016-12-31") 
+```
+
+# Construction of Portfolio
+
+```{r mean & covariance, echo=FALSE}
+#Calculating daily returns of the assets
+myReturns <- lapply(myassets, function(asset) {
+  dailyReturn(na.omit(get(asset)))
+})
+returns <- do.call(merge, myReturns)
+#Calculating the mean of the returns
+colnames(returns) <- myassets
+mean_returns <- colMeans(returns)
+#Calculating the covariance for the year
+covMatrix <- cov(returns) * 252 # Annualize
+```
+
+#### Fitness Function
+
+The fitness function employed below returns a Sharpe Ratio. It is is a measure of risk-adjusted return, defined as:
+$$ S = \frac{R_p - R_f}{\sigma_p} $$
+where:\
+- $R_p$ is the portfolio return\
+- $R_f$ is the risk-free rate\
+- $\sigma_p$ is the portfolio standard deviation (risk)
+A **higher Sharpe Ratio** indicates better risk-adjusted returns.
+The **portfolio return** $R_p$ is calculated as the weighted sum of the individual asset returns:
+$$ R_p = \sum_{i=1}^{n} w_i \times r_i $$
+where: - $R_p$ is the portfolio return\ 
+       - $w_i$ is the weight of asset\
+        -$i$ - $r_i$ is the expected return of asset\
+        -$i$ - $n$ is the number of assets in the portfolio
+The **portfolio risk** $\sigma_p$ is calculated as:
+$$ \sigma_p = \sqrt{w^T \times \Sigma \times w} $$
+where: 
+- $\sigma_p$ is the portfolio risk (standard deviation) 
+- $w$ is the vector of asset weights 
+- $\Sigma$ is the covariance matrix of asset returns 
+- $w^T$ is the transposed vector of asset weights
+
+```{r fitness function, results="hide"}
+calculate_portfolio_fitness <- function(weights, mean_returns, covariance_matrix) {
+  weights <- weights / sum(weights)
+  portfolio_return <- (1 + sum(weights * mean_returns))^252 - 1
+  portfolio_risk <- sqrt(t(weights) %*% (covariance_matrix %*% weights))
+  return(portfolio_return / portfolio_risk)
+}
+portfolioFitness1 <- function(weights) {
+calculate_portfolio_fitness(weights, mean_returns, covMatrix)
+}
+```
+
+## Using GA package
+The GA parameters used were: - Population size: 50 - Maximum iterations: 100 - Mutation rate: 0.1 - Crossover rate: 0.8
+```{r GA package, results="hide"}
+GA <- ga(type = "real-valued", fitness = portfolioFitness1, lower = rep(0, ncol(returns)), upper = rep(1, ncol(returns)), popSize = 50, maxiter = 100, run = 100, pmutation=0.1, pcrossover = 0.8, names=myassets)
+```
+
+```{r GA summary, include=FALSE, echo=FALSE}
+summary(GA)
+```
+
+#### Plot GA
+The plot below Visualizes the performance of the Genetic Algorithm by showing the best shape ratio found over the course of generations.
+```{r plot GA, fig.width=5, fig.height=4,echo=FALSE}
+plot(GA)
+```
+
+#### Evolved Weights
+
+The weights represent the optimal allocation for each asset in the portfolio after running the GA.
+
+```{r optimal weights, include=FALSE, echo=FALSE}
+optimal_weights <- GA@solution
+optimal_weights <- as.vector(optimal_weights)
+#weights to sum to 1
+optimal_weights <- optimal_weights / sum(optimal_weights)
+names(optimal_weights) <- myassets
+print(optimal_weights)
+```
+
+The bar chart below displays the weight allocations of the different assets. Amazon and Netflix received the highest weight allocation.
+
+```{r bar chart, fig.width=4, fig.height=3, echo=FALSE}
+optimal_weights_df <- data.frame(
+  Asset = names(optimal_weights),
+  Weights = as.numeric(optimal_weights)
+)
+
+p <- optimal_weights_df %>%
+  mutate(Asset = as.factor(Asset)) %>%
+  ggplot(aes(x = fct_reorder(Asset, Weights), y = Weights, fill = Asset)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(x = "Assets", y = "Weights", title = "Optimal Portfolio Weights") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette = "Set3")
+
+print(p) 
+```
+
+The portfolio obtained a high return of **45.87%** annually and a moderate risk of **24.95%**. Indicating the portfolio is designed for high growth with a moderate level of risk.
+
+```{r portfolio risk & return, echo=FALSE}
+portfolio_return = (sum(optimal_weights * mean_returns)+ 1)^252 - 1
+portfolio_risk <- sqrt(t(optimal_weights) %*% (covMatrix %*% optimal_weights))
+
+cat("Optimal Portfolio Return:", portfolio_return, "\n")
+cat("Optimal Portfolio Risk:", portfolio_risk, "\n")
+
+# sharpe ratio 
+sharpe_ratio <- portfolio_return / portfolio_risk
+cat("Sharpe Ratio:", sharpe_ratio)
+```
+
+# Evaluation on unseen 'future' data
+
+The portfolio was trained using data from 2015-2016. To assess its potential future performance, we evaluated it with data from 2017. The portfolio's performance on the test data was measured using the weights derived from the Genetic Algorithm. Its results were evaluated based on a portfolio return of **44.24%** and a portfolio risk of **14.54%** during the testing phase. The substantial return suggests that the optimized weights from the Genetic Algorithm continued to yield positive results on previously unseen data. The lower risk indicates that the portfolio experienced less volatility during the testing period.
+
+```{r evaluation on future data, results="hide"}
+myReturns_2017 <- lapply(myassets, function(asset) {
+  # Download 2017 data
+  temp_data <- getSymbols(asset, src="yahoo", from="2017-01-01", to="2017-12-31", 
+               auto.assign = FALSE)
+  
+  # Calculate daily returns for 2017
+  dailyReturn(na.omit(temp_data))  
+})
+test_returns <- do.call(merge, myReturns_2017)
+test_returns <- na.omit(test_returns) 
+colnames(test_returns) <- myassets  
+# Calculate mean returns and covariance 
+test_mean_returns <- colMeans(test_returns)
+test_covMatrix <- cov(test_returns) * 252  # Annualize
+# portfolio return for 2017
+test_portfolio_return <- (sum(optimal_weights * test_mean_returns) + 1)^252 - 1
+cat("2017 Portfolio Return:", test_portfolio_return, "\n")
+# portfolio risk 2017
+test_portfolio_risk <- sqrt(t(optimal_weights) %*% (test_covMatrix %*% optimal_weights))
+cat("2017 Portfolio Risk:", test_portfolio_risk, "\n")
+# Sharpe ratio 2017
+test_sharpe_ratio <- test_portfolio_return / test_portfolio_risk
+cat("2017 Sharpe Ratio:", test_sharpe_ratio)
+```
+
+## Comparison with random portfolios
+
+Multiple random portfolios are generated and their performance compared with the portfolios in the training and test period. On test data (2017) the random portfolio achieved a return of **34.98%** and a risk of **9.10%**. On the training data (2015-2016) the random portfolio achieved a return of **14.37%** and a risk of **16.25%**. The random portfolio demonstrated strong returns during testing but showed poor performance in training, indicating a lack of consistency. This indicates that some random distributions performed favorably in the 2017 market environment but did not adapt effectively to other time frames.This highlights a key weakness of random selection—it lacks a systematic approach to risk-adjusted optimization. Nonetheless, concerning risk, the random portfolio outperformed on the test data, when compared to the evolved GA portfolio. Additionally, it is worth noting that the return and risk values from the training data were relatively similar.
+
+```{r  test data random, results="hide", echo=FALSE}
+# Number of random portfolios to generate
+n_random_portfolios <- 1000  
+
+random_returns <- numeric(n_random_portfolios)
+random_risks <- numeric(n_random_portfolios)
+
+# Loop to generate multiple random portfolios
+for (i in 1:n_random_portfolios) {
+  # Generate random weights
+  random_weights <- runif(n = length(myassets))  
+  random_weights <- random_weights / sum(random_weights)  
+
+  random_returns[i] <- (sum(random_weights * test_mean_returns)+ 1)^252 - 1  
+  random_risks[i] <- sqrt(t(random_weights) %*% (test_covMatrix %*% random_weights))  
+}
+
+average_random_return <- mean(random_returns)
+average_random_risk <- mean(random_risks)
+average_random_sharpe_ratio <- average_random_return / average_random_risk
+
+cat("Average Test Random Portfolio Return:", average_random_return, "\n")
+cat("Average Test Random Portfolio Risk:", average_random_risk, "\n")
+cat("Average Test Random Sharpe Ratio:", average_random_sharpe_ratio)
+```
+
+
+```{r random train data, results="hide", echo=FALSE}
+# Number of random portfolios to generate
+n_train_random_portfolios <- 1000  
+
+train_random_returns <- numeric(n_train_random_portfolios)
+train_random_risks <- numeric(n_train_random_portfolios)
+
+# Loop to generate multiple random portfolios
+for (i in 1:n_train_random_portfolios) {
+  # Generate random weights
+  train_random_weights <- runif(n = length(myassets))  
+  train_random_weights <- train_random_weights / sum(train_random_weights)  # Normalize
+
+  train_random_returns[i] <- (sum(train_random_weights * mean_returns)+ 1)^252 - 1  
+  train_random_risks[i] <- sqrt(t(train_random_weights) %*% (covMatrix %*% train_random_weights))  
+}
+average_train_random_return <- mean(train_random_returns)
+average_train_random_risk <- mean(train_random_risks)
+average_train_sharpe_ratio <- average_train_random_return / average_train_random_risk
+
+cat("Average Train Random Portfolio Return:", average_train_random_return, "\n")
+cat("Average Train Random Portfolio Risk:", average_train_random_risk, "\n")
+cat("Average Train Random Sharpe Ratio:", average_train_sharpe_ratio, "\n")
+```
+
+## Comparison with balanced portfolios
+
+An equally weighted portfolio where all assets receive equal allocation was created and its performance compared with the portfolios in the training and test period. On test data (2017) the balanced portfolio achieved a return of **34.67%** and a risk of **8.49%**. On the training data (2015-2016) the balanced portfolio achieved a return of **14.31%** and a risk of **15.79%**. The balanced portfolio achieved impressive returns during testing but showed poor performance during training, indicating a lack of consistency over time. On the other hand, the evolved portfolio demonstrated greater reliability, as it exhibited more consistent returns across both training and testing phases. The observed consistency indicates that the genetic algorithm (GA) optimization process successfully identified assets exhibiting stable performance trends. In contrast to random and balanced portfolios, which can be influenced by temporary market volatility, the GA approach systematically chooses and allocates weights to assets in order to enhance return-to-risk efficiency. In terms of risk, however, the balanced portfolio fared better, showing lower levels of risk across both training and testing periods compared to the GA portfolio, which made it more stable. Additionally, it is noteworthy that the returns and risk values from the training data were relatively close in value.
+
+```{r balanced on test data, results="hide", echo=FALSE}
+# Each asset gets equal allocation
+balanced_weights <- rep(1 / length(myassets), length(myassets))  
+balanced_return <- (sum(balanced_weights * test_mean_returns)+ 1)^252 - 1 
+balanced_risk <- sqrt(t(balanced_weights) %*% (test_covMatrix %*% balanced_weights))
+balanced_sharpe_ratio <- balanced_return / balanced_risk
+
+cat("\nBalanced Portfolio Performance (2017):\n")
+cat("Balanced test Portfolio Return:", balanced_return, "\n")
+cat("Balanced test Portfolio Risk:", balanced_risk, "\n")
+cat("Balanced test Sharpe Ratio:", balanced_sharpe_ratio, "\n")
+```
+
+
+```{r train data balanced, results="hide", echo=FALSE}
+# # Each asset gets equal allocation
+train_balanced_weights <- rep(1 / length(myassets), length(myassets))  
+
+
+train_balanced_return <- (sum(train_balanced_weights * mean_returns)+ 1)^252 - 1 
+
+train_balanced_risk <- sqrt(t(train_balanced_weights) %*% (covMatrix %*% train_balanced_weights))
+
+train_balanced_sharpe_ratio <- train_balanced_return / train_balanced_risk
+
+cat("\nBalanced Portfolio Performance (2015-2016):\n")
+cat("Balanced train Portfolio Return:", train_balanced_return, "\n")
+cat("Balanced train Portfolio Risk:", train_balanced_risk, "\n")
+cat("Balanced train Sharpe Ratio:", train_balanced_sharpe_ratio, "\n")
+```
+
+### Visualize the comparison
+
+From the table below, It can be clearly seen the comparison between the different portfolios on train data and test data. There was a better performance across all portfolios on the test data (2017) compared to the train data (2015-2016). This may be because market conditions in 2017 may have been more favorable.
+
+```{r comparison 1, echo=FALSE, fig.width=4, fig.height=5}
+performance_comparison <- data.frame(
+  Portfolio = c("GA-Optimized", "Random (Avg. of 1000 runs)", "Balanced (Equal Weights)"),
+  Train_Return = c(portfolio_return * 100, average_train_random_return * 100, train_balanced_return * 100),  
+  Train_Risk = c(portfolio_risk * 100, average_train_random_risk * 100, train_balanced_risk * 100),    
+  Test_Return = c(test_portfolio_return * 100, average_random_return * 100, balanced_return * 100),   
+  Test_Risk = c(test_portfolio_risk * 100, average_random_risk * 100, balanced_risk * 100)        
+)
+
+
+kable(performance_comparison, caption = "Performance Comparisons")
+```
+
+# Multi-objective approach
+
+Since portfolio optimization requires balancing risk and return, some would prefer to prioritize maximizing returns while others would focus on minimizing risk. This section explores how modifying the fitness function to adjust α (alpha) affects portfolio allocations and performance.
+
+To balance risk and return, the following fitness function was used: $$ Fitness Value = {\alpha \times Portfolio Return - (1 - \alpha) \times Portfolio Risk} $$ where:\
+- \$\alpha = 0.0 \$ is fully risk-averse\
+- \$\alpha = 1.0 \$ is fully return-seeking\
+- \$\alpha = 0.3, 0.5, 0.7 \$ is balanced trade-offs between risk and return\
+
+A Genetic Algorithm (GA) was run for each α value to find the optimal portfolio weights. Low α values (0.0, 0.3) prioritize risk minimization, resulting in higher allocations to stable, defensive stocks such as WMT (Walmart), JNJ (Johnson & Johnson), and KO (Coca-Cola). Higher α values (0.7, 1.0) prioritize return maximization, leading to higher allocations in growth stocks such as NFLX (Netflix), AMZN (Amazon), and BABA (Alibaba). A balanced portfolio (α = 0.5) has a mix of stable and growth stocks, providing a compromise between risk and return.
+
+In comparison to the GA portfolios, balanced, and random portfolios, the multi-objective GA portfolios with α adjustments offer greater adaptability for varying investor risk appetites. Although α = 0.5 serves as an effective compromise, the GA portfolios still outperforms in terms of risk-adjusted returns. Nonetheless, portfolios with lower α values demonstrate enhanced stability, while those with higher α values reach the highest returns at a greater risk.
+
+```{r multi-objective,  results="hide", echo=FALSE}
+
+alpha_values <- c(0.0, 0.3, 0.5, 0.7, 1.0)  
+weights_results <- data.frame(matrix(ncol = length(myassets) + 1, nrow = 0))
+portfolioFitnessAlpha <- function(weights, alpha) {
+  weights <- weights / sum(weights)  
+  portfolio_return <- (sum(weights * mean_returns) + 1)^252 - 1  
+  portfolio_risk <- sqrt(t(weights) %*% (covMatrix %*% weights)) 
+  fitness_value <- alpha * portfolio_return - (1 - alpha) * portfolio_risk
+  return(-fitness_value)
+}
+
+results <- data.frame(alpha = numeric(0), train_return = numeric(0), train_risk = numeric(0),
+                      test_return = numeric(0), test_risk = numeric(0))
+
+# Running GA for each α value
+for (alpha in alpha_values) {
+  portfolioFitnessDynamic <- function(weights) {  
+    portfolioFitnessAlpha(weights, alpha)
+  }
+  
+  GA <- ga(
+    type = "real-valued", 
+    fitness = portfolioFitnessDynamic, 
+    lower = rep(0.05, length(myassets)),  
+    upper = rep(0.30, length(myassets)),  
+    popSize = 50, maxiter = 100, run = 100, seed = 42, names = myassets
+  )
+  summary(GA)
+  
+  # Extract optimal weights
+  optimal_weights <- GA@solution
+  optimal_weights <- optimal_weights / sum(optimal_weights)  
+  optimal_weights <- matrix(optimal_weights, ncol = 1)
+  weights_results <- rbind(weights_results, c(alpha, as.numeric(optimal_weights)))
+  
+  train_portfolio_return <- (sum(optimal_weights * mean_returns)+ 1)^252 - 1
+  train_portfolio_risk <- sqrt(t(optimal_weights) %*% (covMatrix %*% optimal_weights))
+  
+  test_portfolio_return <- (sum(optimal_weights * test_mean_returns)+ 1)^252 - 1
+  test_portfolio_risk <- sqrt(t(optimal_weights) %*% (test_covMatrix %*% optimal_weights))
+  
+  results <- rbind(results, data.frame(alpha = alpha, 
+                                       train_return = train_portfolio_return, train_risk = train_portfolio_risk,
+                                       test_return = test_portfolio_return, test_risk = test_portfolio_risk))
+}
+colnames(weights_results) <- c("alpha", myassets) 
+print(weights_results)
+
+print(results)
+```
+
+
+```{r weight allocation chart, fig.width=5, fig.height=4, results="hide", echo=FALSE}
+
+library(ggplot2)
+ggplot(melt(weights_results, id.vars = "alpha"), aes(x = alpha, y = value, fill = variable)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(title = "Portfolio Weight Allocation for Different Alpha Values",
+       x = "Alpha (Risk-Return Balance)", y = "Weight Allocation", fill = "Assets") +
+  theme_minimal()
+```
+
+
+```{r, include=FALSE, echo=FALSE}
+
+results$alpha <- as.factor(results$alpha)
+# Train Data: Risk vs Return
+ggplot(results, aes(x = train_risk, y = train_return, color = alpha)) +
+  geom_point(size = 4) +
+  geom_text(aes(label = alpha), vjust = -1.5, hjust = 0.5, size = 5) +  
+  labs(
+    title = "Risk vs. Return for Different α Values (Train Data)",
+    x = "Portfolio Risk (Volatility)",
+    y = "Portfolio Return",
+    color = "Alpha (Risk-Return Balance)"
+  ) +
+  theme_minimal()
+```
+
+
+```{r, include=FALSE, echo=FALSE}
+# Test Data: Risk vs Return
+ggplot(results, aes(x = test_risk, y = test_return, color = alpha)) +
+  geom_point(size = 4) +
+  geom_text(aes(label = alpha), vjust = -1.5, hjust = 0.5, size = 5) +  
+  labs(
+    title = "Risk vs. Return for Different α Values (Test Data)",
+    x = "Portfolio Risk (Volatility)",
+    y = "Portfolio Return",
+    color = "Alpha (Risk-Return Balance)"
+  ) +
+  theme_minimal()
+```
+
+# Using GAs to select Assets
+
+The GA picks 10 assets from a larger group of 50, focusing on their risk-adjusted performance measured by the Sharpe ratio. This selection guarantees that the assets chosen create an optimal portfolio by balancing potential high returns with manageable risk levels. Unlike Part 1, where assets were chosen through manual selection, this method introduces a dynamic selection process that can respond to shifts in market conditions.
+
+```{r PART 2, results="hide"}
+large_assets <- c("AAPL", "MSFT", "GOOGL", "TSLA", "NFLX", "NVDA", "AMZN", "JPM", "DIS", "KO", 
+                  "BA", "HD", "GE", "INTC", "F", "AMD", "META", "PEP", "XOM", "CVX",  
+                  "PFE", "MRK", "JNJ", "WMT", "PG", "COST", "MCD", "NKE", "SBUX",  
+                  "IBM", "CSCO", "V", "MA", "CAT", "GS", "USB", "TGT", "LMT", "MMM",  
+                  "ADBE", "QCOM", "BMY", "HON", "DUK", "SO", "AEP", "SCHW", "BK", "WFC", "RTX")
+
+#Download data
+getSymbols(large_assets, src="yahoo", from="2015-01-01", to="2016-12-31") 
+```
+
+
+```{r large mean, echo=FALSE}
+#Calculating daily returns of the assets
+myLargeReturns <- lapply(large_assets, function(asset) {
+  dailyReturn(na.omit(get(asset)))
+})
+large_returns <- do.call(merge, myLargeReturns)
+#Calculating the mean of the returns
+colnames(large_returns) <- large_assets
+mean_large_returns <- colMeans(large_returns)
+#Calculating the covariance for the year
+covLargeMatrix <- cov(large_returns) * 252 # Annualize
+```
+
+#### Fitness Function
+
+The fitness function used clearly highlights that the assets to be selected need to have asset_indices of more than 0.5 to be considered the best. And it returns assets with the highest sharpe ratio.
+
+```{r large fitness function, results="hide"}
+portfolioFitnessAssets <- function(asset_indices) {
+  selected_assets <- large_assets[which(asset_indices > 0.5)]
+  if (length(selected_assets) < 10) return(-Inf)
+  available_assets <- intersect(selected_assets, colnames(large_returns))
+  if (length(available_assets) < 10) return(-Inf)
+  selected_mean_returns <- colMeans(large_returns[, available_assets]) * 252  
+  selected_covMatrix <- cov(large_returns[, available_assets]) * 252  
+  portfolio_return <- mean(selected_mean_returns)  
+  portfolio_risk <- sqrt(sum(diag(selected_covMatrix)))  
+  fitness_value <- portfolio_return / portfolio_risk  
+  return(fitness_value)
+}
+```
+
+#### GA to select assets
+
+Genetic Algorithm is used to select best performing 10 assets from a pool of 50.
+
+```{r GA select assets, results="hide", echo=FALSE}
+
+GA_assets <- ga(
+  type = "binary",  
+  fitness = portfolioFitnessAssets,
+  nBits = length(large_assets),  
+  popSize = 50, 
+  maxiter = 100,  
+  run = 100,  
+  pcrossover = 0.9,  
+  pmutation = 0.1,  
+  elitism = 5,  
+  names = large_assets
+)
+best_assets <- large_assets[which(GA_assets@solution > 0.5)]
+print(best_assets) 
+```
+
+```{r large summary, results="hide", echo=FALSE}
+summary(GA_assets)
+```
+
+```{r large plot, results="hide", echo=FALSE}
+plot(GA_assets)
+```
+
+#### using GA(1) for weight optimization
+
+In this concluding method, we combine two tiers of optimization using Genetic Algorithms: 1 Asset Selection via GA: Choosing the top 10 assets from a selection of 50 according to their Sharpe ratios. 2️ Portfolio Optimization via GA: Utilizing the chosen assets to determine optimal weights for achieving the highest risk-adjusted return. This methodology enables the asset selection GA to obtain input from the portfolio optimization GA, guaranteeing that the final portfolio considers not only the individual Sharpe ratios but also the overall risk-return balance at the portfolio level.
+
+```{r part 2 weight optimization, results="hide", echo=FALSE}
+
+filtered_returns <- large_returns[, best_assets]
+mean_filtered_returns <- colMeans(filtered_returns)  
+covFilteredMatrix <- cov(filtered_returns) * 252  
+
+# Fitness Function for Weight Optimization from part 1
+portfolioFitness2 <- function(weights) {
+calculate_portfolio_fitness(weights, mean_filtered_returns, covFilteredMatrix)
+}
+
+GA_weights <- ga(
+  type = "real-valued",
+  fitness = portfolioFitness2, 
+  lower = rep(0.05, length(best_assets)),  
+  upper = rep(0.30, length(best_assets)), 
+  popSize = 50, maxiter = 100, run = 100, seed = 42,
+  names = best_assets
+)
+
+# Extract Optimal Weights
+optimal_weights2 <- GA_weights@solution
+optimal_weights2 <- optimal_weights2 / sum(optimal_weights2)
+names(optimal_weights2) <- best_assets
+print(optimal_weights2)
+```
+
+Optimal weights from the GA are plotted below. It can be seen that **NVDA** has the most allocated weights and **ADBE** the lowest allocations. Also, some of the assets that had higher weights allocations in the original GA have lower weights below.
+
+```{r large bar chart,  fig.width=5, fig.height=4, results="hide", echo=FALSE}
+
+optimal_weights2_df <- data.frame(
+  Asset2 = names(optimal_weights2),
+  Weights2 = as.numeric(optimal_weights2)
+)
+p2 <- optimal_weights2_df %>%
+  mutate(Asset2 = as.factor(Asset2)) %>%
+  ggplot(aes(x = fct_reorder(Asset2, Weights2), y = Weights2, fill = Asset2)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(x = "Assets", y = "Weights", title = "Optimal Large Portfolio Weights") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette = "Set3") 
+print(p2) 
+```
+
+### Large Portfolio return and risk
+
+The portfolio obtained a high return of **76.40%** annually and a moderate risk of **23.93%**. Indicating the portfolio is designed for high growth with a moderate level of risk.
+
+```{r large portfolio risk & return, results="hide", echo=FALSE}
+# Convert to column matrix
+optimal_weights2 <- matrix(optimal_weights2, ncol = 1)  
+
+portfolio_return2 <- (sum(optimal_weights2 * mean_filtered_returns) + 1)^252 - 1
+portfolio_risk2 <- sqrt(t(optimal_weights2) %*% (covFilteredMatrix %*% optimal_weights2))
+sharpe_ratio2 <- portfolio_return2 / portfolio_risk2
+
+cat("Optimal Large Portfolio Return:", portfolio_return2, "\n")
+cat("Optimal Large Portfolio Risk:", portfolio_risk2, "\n")
+cat("Optimal Large Sharpe Ratio:", sharpe_ratio2, "\n")
+```
+
+### Large Train/Test Split
+
+The large portfolio was optimized using data from 2015-2016. To determine how well it would perform in future, we tested it on data from the 'future', 2017. The performance of the portfolio on the test data was calculated using the weights obtained from the Genetic Algorithm. It's performance was then evaluated based on a portfolio return of **49.09%** and portfolio risk of **20.48%** during the test period. The high return indicates that the optimized weights from the Genetic Algorithm continued to perform well on unseen data. The low risk indicates that the portfolio was less volatile in the test period. This is way higher compared to the test portfolio from part 1.
+
+```{r large train/test split, results="hide", echo=FALSE}
+# Download 2017 data for large assets
+myLargeReturns_2017 <- lapply(best_assets, function(asset2) {
+  # Download 2017 data
+  temp_data2 <- getSymbols(asset2, src="yahoo", from="2017-01-01", to="2017-12-31", auto.assign = FALSE)
+  
+  # Calculate daily returns for 2017
+  dailyReturn(na.omit(temp_data2))  
+})
+
+test_returns2 <- do.call(merge, myLargeReturns_2017)
+test_returns2 <- na.omit(test_returns2) 
+colnames(test_returns2) <- best_assets  
+
+# Calculate mean returns and covariance 
+test_mean_returns2 <- colMeans(test_returns2)
+test_covMatrix2 <- cov(test_returns2) * 252  # Annualize
+
+test_portfolio_return2 <- (sum(optimal_weights2 * test_mean_returns2) + 1)^252 - 1
+test_portfolio_risk2 <- sqrt(t(optimal_weights2) %*% (test_covMatrix2 %*% optimal_weights2))
+test_sharpe_ratio_2 <- test_portfolio_return2 / test_portfolio_risk2
+
+cat("2017 Portfolio Return2:", test_portfolio_return2, "\n")
+cat("2017 Portfolio Risk2:", test_portfolio_risk2, "\n")
+cat("2017 Sharpe Ratio2:", test_sharpe_ratio_2, "\n")
+```
+
+#### Visualizing Comparison
+
+```{r table comparison, echo=FALSE}
+#data frame for performance comparison
+performance_comparison2 <- data.frame(
+  Portfolio = c("GA-Optimized (Part 1)", 
+                "GA-Optimized (Part 2, Larger Set)", 
+                "Random Portfolio", 
+                "Balanced (Equal Weights)"),
+  Train_Return = c(portfolio_return * 100, portfolio_return2 * 100, 
+                   average_train_random_return * 100, train_balanced_return * 100),  
+  Train_Risk = c(portfolio_risk * 100, portfolio_risk2 * 100, 
+                 average_train_random_risk * 100, train_balanced_risk * 100),    
+  Test_Return = c(test_portfolio_return * 100, test_portfolio_return2 * 100, 
+                  average_random_return * 100, balanced_return * 100),   
+  Test_Risk = c(test_portfolio_risk * 100, test_portfolio_risk2 * 100, 
+                average_random_risk * 100, balanced_risk * 100)
+)
+
+kable(performance_comparison2, caption = "Performance Comparisons")
+```
+### Intergration of GAs
+
+This section describes a two-stage portfolio optimization using Genetic Algorithms (GAs). In the integrated function, there exists constraints to ensure 10 assets will be selected. The GA for weight optimization is also included in the function and uses the fitness function of the original GA in part 1. This GA will then optimize the weights for the assets that will be selected. The asset selection GA is the called and the integrated fitness function passed into it. It therefore selects the best 10 assets with the help of GA for weight optimization.
+
+```{r Integration of the GAs, results="hide"}
+global_optimal_weights <- NULL
+
+integratedPortfolioFitness <- function(asset_indices) {
+  gc()
+  selected_assets <- large_assets[which(asset_indices > 0.5)]
+  if (length(selected_assets)  < 10) return(-Inf)  
+
+  available_assets <- intersect(selected_assets, colnames(large_returns))
+  if (length(available_assets) < 10) return(-Inf)
+  
+  filtered_returns <- large_returns[, available_assets]
+  mean_filtered_returns <- colMeans(filtered_returns)  
+  covFilteredMatrix <- cov(filtered_returns) * 252  
+  
+  portfolioFitness2 <- function(weights) {
+    calculate_portfolio_fitness(weights, mean_filtered_returns, covFilteredMatrix)
+  }
+ 
+
+  #Run GA 2 for Weight Optimization
+  GA_weights_final <- ga(
+    type = "real-valued",
+    fitness = portfolioFitness2, 
+    lower = rep(0.05, length(available_assets)),  
+    upper = rep(0.30, length(available_assets)),  
+    popSize = 50, maxiter = 100, run = 100, seed = 42,
+    monitor = FALSE,
+    names = available_assets
+  )
+
+  # Extract optimized weights
+  #optimal_weights_final <- GA_weights_final@solution / sum(GA_weights_final@solution)
+  optimal_weights_final <- GA_weights_final@solution
+  optimal_weights_final <- optimal_weights_final / sum(optimal_weights_final)  
+  optimal_weights_final <- matrix(optimal_weights_final, ncol = 1)
+  
+   assign("global_optimal_weights", optimal_weights_final, envir = .GlobalEnv) 
+   
+  final_portfolio_return <- (sum(optimal_weights_final * mean_filtered_returns) + 1)^ 251 -1
+  final_portfolio_risk <- sqrt(t(optimal_weights_final) %*% (covFilteredMatrix %*% optimal_weights_final))
+
+  #Integrate Feedback into Asset Selection GA
+  fitness_value <- (mean(mean_filtered_returns) / sqrt(sum(diag(covFilteredMatrix)))) + 
+                   (final_portfolio_return / final_portfolio_risk)
+
+  return(fitness_value)
+}
+
+# Select Assets with Portfolio Feedback
+GA_integrated <- ga(
+  type = "binary",  
+  fitness = integratedPortfolioFitness,  
+  nBits = length(large_assets),  
+  popSize = 50, 
+  maxiter = 100,  
+  run = 100,  
+  pcrossover = 0.9,  
+  pmutation = 0.1,  
+  elitism = 5,  
+  monitor = FALSE,
+  names = large_assets
+  
+)
+
+#final selected assets
+best_assets_final <- large_assets[which(GA_integrated@solution > 0.5)]
+
+print(best_assets_final)
+```
+
+```{r GA integrated summary, results="hide", echo=FALSE}
+summary(GA_integrated)
+```
+
+```{r performance train, results="hide", echo=FALSE}
+# Filter the returns for selected assets
+filtered_returns_train <- large_returns[, best_assets_final]
+mean_filtered_returns_train <- colMeans(filtered_returns_train)  
+covFilteredMatrix_train <- cov(filtered_returns_train) * 252  # Annualized covariance
+
+# Compute the portfolio return and risk for the train period
+train_portfolio_return <- (sum(global_optimal_weights * mean_filtered_returns_train) + 1)^252 - 1
+train_portfolio_risk <- sqrt(t(global_optimal_weights) %*% (covFilteredMatrix_train %*% global_optimal_weights))
+
+# Sharpe ratio for train data
+train_sharpe_ratio <- train_portfolio_return / train_portfolio_risk
+cat("Train Portfolio Return (2015-2016):", train_portfolio_return, "\n")
+cat("Train Portfolio Risk (2015-2016):", train_portfolio_risk, "\n")
+cat("Train Sharpe Ratio (2015-2016):", train_sharpe_ratio, "\n")
+```
+
+```{r integrated GA on test data, results="hide", echo=FALSE}
+# Download 2017 data for the selected assets
+myLargeReturns_2017 <- lapply(best_assets_final, function(asset) {
+  temp_data2 <- getSymbols(asset, src="yahoo", from="2017-01-01", to="2017-12-31", auto.assign = FALSE)
+  dailyReturn(na.omit(temp_data2))
+})
+
+# Merge 2017 returns
+test_returns2 <- do.call(merge, myLargeReturns_2017)
+test_returns2 <- na.omit(test_returns2)
+colnames(test_returns2) <- best_assets_final  
+
+test_mean_returns2 <- colMeans(test_returns2) 
+test_covMatrix2 <- cov(test_returns2) * 252 
+
+test_portfolio_return3 <- (sum(global_optimal_weights * test_mean_returns2)+ 1)^252 -1 
+test_portfolio_risk3 <- sqrt(t(global_optimal_weights) %*% (test_covMatrix2 %*% global_optimal_weights))
+test_sharpe_ratio3 <- test_portfolio_return / test_portfolio_risk
+
+cat("Test Portfolio Return (2017):", test_portfolio_return3, "\n")
+cat("Test Portfolio Risk (2017):", test_portfolio_risk3, "\n")
+cat("Test Sharpe Ratio (2017):", test_sharpe_ratio3, "\n")
+```
+
+### Comparison of Portfolios
+The integrated genetic algorithm method, which allows asset selection to be shaped by feedback at the portfolio level, proves to be more effective than previous techniques. In contrast to Part 1, where assets were chosen in advance, and Part 2, where selection relied solely on Sharpe ratios, this method continuously adjusts asset selections based on real portfolio performance. Consequently, the outcome is a stronger portfolio that achieves high returns while minimizing unnecessary risk.
+
+```{r final table comparison, fig.width=4, fig.height=5, echo=FALSE}
+#data frame for performance comparison
+performance_comparison3 <- data.frame(
+  Portfolio = c("GA-Optimized (Part 1)", 
+                "GA-Integrated (Part 1, Part 2)", 
+                "Random Portfolio", 
+                "Balanced (Equal Weights)"),
+  Train_Return = c(portfolio_return * 100, train_portfolio_return * 100, 
+                   average_train_random_return * 100, train_balanced_return * 100),  
+  Train_Risk = c(portfolio_risk * 100, portfolio_risk2 * 100, 
+                 average_train_random_risk * 100, train_balanced_risk * 100),    
+  Test_Return = c(test_portfolio_return * 100, test_portfolio_return3 * 100, 
+                  average_random_return * 100, balanced_return * 100),   
+  Test_Risk = c(test_portfolio_risk * 100, test_portfolio_risk3 * 100, 
+                average_random_risk * 100, balanced_risk * 100)
+)
+
+kable(performance_comparison3, caption = "Performance Comparisons")
+```
+
+
+# Conclusion
+
+The findings indicate that the use of Genetic Algorithms for both asset selection and portfolio optimization significantly improves performance. In contrast to Part 1, this method dynamically chooses assets, resulting in a portfolio that offers greater returns while managing a reasonable level of risk. Furthermore, the portfolio optimized through GA consistently surpasses both random and equally weighted portfolios, validating the efficacy of evolutionary optimization within financial markets.
+
+# References
+
+[1] Wikipedia Contributors, “Genetic algorithm,” Wikipedia, Dec. 28, 2024.
+
+[2] “Portfolio Optimization - Financial Edge,” Financial Edge, Sep. 10, 2024. <https://www.fe.training/free-resources/portfolio-management/portfolio-optimization/>
+
+[3] Yahoo Finance, “Yahoo Finance - Business finance, stock market, quotes, news,” Yahoo Finance UK, 2024. <https://uk.finance.yahoo.com/>
+
+[4]“Sharpe ratio,” Wikipedia, Jan. 20, 2021. <https://en.wikipedia.org/wiki/Sharpe_ratio>
